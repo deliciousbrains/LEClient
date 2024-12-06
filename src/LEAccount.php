@@ -2,6 +2,8 @@
 
 namespace LEClient;
 
+use LEClient\Exceptions\LEAccountException;
+
 /**
  * LetsEncrypt Account class, containing the functions and data associated with a LetsEncrypt account.
  *
@@ -79,7 +81,7 @@ class LEAccount
 		{
 			$this->connector->accountURL = $this->getLEAccount();
 		}
-		if($this->connector->accountURL == false) throw new \RuntimeException('Account not found or deactivated.');
+		if($this->connector->accountURL == false) throw LEAccountException::AccountNotFoundException();
 		$this->getLEAccountData();
 	}
 
@@ -96,7 +98,7 @@ class LEAccount
 
 		$sign = $this->connector->signRequestJWK(array('contact' => $contact, 'termsOfServiceAgreed' => true), $this->connector->newAccount);
 		$post = $this->connector->post($this->connector->newAccount, $sign);
-		if(strpos($post['header'], "201 Created") !== false)
+		if($post['status'] === 201)
 		{
 			if(preg_match('~Location: (\S+)~i', $post['header'], $matches)) return trim($matches[1]);
 		}
@@ -113,7 +115,7 @@ class LEAccount
 		$sign = $this->connector->signRequestJWK(array('onlyReturnExisting' => true), $this->connector->newAccount);
 		$post = $this->connector->post($this->connector->newAccount, $sign);
 
-		if(strpos($post['header'], "200 OK") !== false)
+		if($post['status'] === 200)
 		{
 			if(preg_match('~Location: (\S+)~i', $post['header'], $matches)) return trim($matches[1]);
 		}
@@ -127,8 +129,9 @@ class LEAccount
 	{
 		$sign = $this->connector->signRequestKid(array('' => ''), $this->connector->accountURL, $this->connector->accountURL);
 		$post = $this->connector->post($this->connector->accountURL, $sign);
-		if(strpos($post['header'], "200 OK") !== false)
+		if($post['status'] === 200)
 		{
+			$this->id = isset($post['body']['id']) ? $post['body']['id'] : '';
 			$this->key = $post['body']['key'];
 			$this->contact = $post['body']['contact'];
 			$this->agreement = isset($post['body']['agreement']) ? $post['body']['agreement'] : '';
@@ -138,7 +141,7 @@ class LEAccount
 		}
 		else
 		{
-			throw new \RuntimeException('Account data cannot be found.');
+			throw LEAccountException::AccountNotFoundException();
 		}
 	}
 
@@ -155,8 +158,9 @@ class LEAccount
 
 		$sign = $this->connector->signRequestKid(array('contact' => $contact), $this->connector->accountURL, $this->connector->accountURL);
 		$post = $this->connector->post($this->connector->accountURL, $sign);
-		if(strpos($post['header'], "200 OK") !== false)
+		if($post['status'] === 200)
 		{
+			$this->id = isset($post['body']['id']) ? $post['body']['id'] : '';
 			$this->key = $post['body']['key'];
 			$this->contact = $post['body']['contact'];
 			$this->agreement = isset($post['body']['agreement']) ? $post['body']['agreement'] : '';
@@ -167,7 +171,7 @@ class LEAccount
 			{
 				$this->log->info('Account data updated.');
 			}
-			else if($this->log >= LECLient::LOG_STATUS) LEFunctions::log('Account data updated.', 'function updateAccount');
+			else if($this->log >= LEClient::LOG_STATUS) LEFunctions::log('Account data updated.', 'function updateAccount');
 			return true;
 		}
 		else
@@ -194,7 +198,7 @@ class LEAccount
 		$outerPayload = $this->connector->signRequestJWK($innerPayload, $this->connector->keyChange, $this->accountKeys['private_key'].'.new');
 		$sign = $this->connector->signRequestKid($outerPayload, $this->connector->accountURL, $this->connector->keyChange);
 		$post = $this->connector->post($this->connector->keyChange, $sign);
-		if(strpos($post['header'], "200 OK") !== false)
+		if($post['status'] === 200)
 		{
 			unlink($this->accountKeys['private_key']);
 			unlink($this->accountKeys['public_key']);
@@ -207,7 +211,7 @@ class LEAccount
 			{
 				$this->log->info('Account keys changed.');
 			}
-			elseif($this->log >= LECLient::LOG_STATUS) LEFunctions::log('Account keys changed.', 'function changeAccountKey');
+			elseif($this->log >= LEClient::LOG_STATUS) LEFunctions::log('Account keys changed.', 'function changeAccountKey');
 			return true;
 		}
 		else
@@ -225,14 +229,16 @@ class LEAccount
 	{
 		$sign = $this->connector->signRequestKid(array('status' => 'deactivated'), $this->connector->accountURL, $this->connector->accountURL);
 		$post = $this->connector->post($this->connector->accountURL, $sign);
-		if(strpos($post['header'], "200 OK") !== false)
+		if($post['status'] === 200)
 		{
 			$this->connector->accountDeactivated = true;
 			if($this->log instanceof \Psr\Log\LoggerInterface) 
 			{
 				$this->log->info('Account deactivated.');
 			}
-			elseif($this->log >= LECLient::LOG_STATUS) LEFunctions::log('Account deactivated.', 'function deactivateAccount');
+			elseif($this->log >= LEClient::LOG_STATUS) LEFunctions::log('Account deactivated.', 'function deactivateAccount');
+			
+			return true;
 		}
 		else
 		{

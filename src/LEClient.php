@@ -2,6 +2,8 @@
 
 namespace LEClient;
 
+use LEClient\Exceptions\LEClientException;
+
 /**
  * Main LetsEncrypt Client class, works as a framework for the LEConnector, LEAccount, LEOrder and LEAuthorization classes.
  *
@@ -40,12 +42,14 @@ class LEClient
 	const LE_PRODUCTION = 'https://acme-v02.api.letsencrypt.org';
 	const LE_STAGING = 'https://acme-staging-v02.api.letsencrypt.org';
 
-	private $certificatesKeys;
+	private $certificateKeys;
 	private $accountKeys;
 
 	private $connector;
 	private $account;
-
+	
+	private $sourceIp = false;
+	
 	private $log;
 
 	const LOG_OFF = 0;		// Logs no messages or faults, except Runtime Exceptions.
@@ -62,12 +66,12 @@ class LEClient
      * @param array 	$certificateKeys 	Optional array containing location of all certificate files. Required paths are public_key, private_key, order and certificate/fullchain_certificate (you can use both or only one of them)
      * @param string 	$accountKeys 		The directory in which the account keys are stored. Is a subdir inside $certificateKeys. Defaults to '__account/'.(optional)
      * @param array 	$accountKeys 		Optional array containing location of account private and public keys. Required paths are private_key, public_key.
+	 * @param string    $sourceIp           Optional source IP address.
      */
-	public function __construct($email, $acmeURL = LEClient::LE_PRODUCTION, $log = LEClient::LOG_OFF, $certificateKeys = 'keys/', $accountKeys = '__account/')
+	public function __construct($email, $acmeURL = LEClient::LE_PRODUCTION, $log = LEClient::LOG_OFF, $certificateKeys = 'keys/', $accountKeys = '__account/', $sourceIp = false)
 	{
-
 		$this->log = $log;
-
+		$this->sourceIp = $sourceIp;
 		if (is_bool($acmeURL))
 		{
 			if ($acmeURL === true) $this->baseURL = LEClient::LE_STAGING;
@@ -77,10 +81,10 @@ class LEClient
 		{
 			$this->baseURL = $acmeURL;
 		}
-		else throw new \RuntimeException('acmeURL must be set to string or bool (legacy).');
+		else throw LEClientException::InvalidArgumentException('acmeURL must be set to string or bool (legacy).');
 
-		if (is_array($certificateKeys) && is_string($accountKeys)) throw new \RuntimeException('When certificateKeys is array, accountKeys must be array too.');
-		elseif (is_array($accountKeys) && is_string($certificateKeys)) throw new \RuntimeException('When accountKeys is array, certificateKeys must be array too.');
+		if (is_array($certificateKeys) && is_string($accountKeys)) throw LEClientException::InvalidArgumentException('When certificateKeys is array, accountKeys must be array too.');
+		elseif (is_array($accountKeys) && is_string($certificateKeys)) throw LEClientException::InvalidArgumentException('When accountKeys is array, certificateKeys must be array too.');
 
 		if (is_string($certificateKeys))
 		{
@@ -102,21 +106,21 @@ class LEClient
 		}
 		elseif (is_array($certificateKeys))
 		{
-			if (!isset($certificateKeys['certificate']) && !isset($certificateKeys['fullchain_certificate'])) throw new \RuntimeException('certificateKeys[certificate] or certificateKeys[fullchain_certificate] file path must be set.');
-			if (!isset($certificateKeys['private_key'])) throw new \RuntimeException('certificateKeys[private_key] file path must be set.');
+			if (!isset($certificateKeys['certificate']) && !isset($certificateKeys['fullchain_certificate'])) throw LEClientException::InvalidArgumentException('certificateKeys[certificate] or certificateKeys[fullchain_certificate] file path must be set.');
+			if (!isset($certificateKeys['private_key'])) throw LEClientException::InvalidArgumentException('certificateKeys[private_key] file path must be set.');
 			if (!isset($certificateKeys['order'])) $certificateKeys['order'] = dirname($certificateKeys['private_key']).'/order';
 			if (!isset($certificateKeys['public_key'])) $certificateKeys['public_key'] = dirname($certificateKeys['private_key']).'/public.pem';
 
 			foreach ($certificateKeys as $param => $file) {
 				$parentDir = dirname($file);
-				if (!is_dir($parentDir)) throw new \RuntimeException($parentDir.' directory not found.');
+				if (!is_dir($parentDir)) throw LEClientException::InvalidDirectoryException($parentDir);
 			}
 
 			$this->certificateKeys = $certificateKeys;
 		}
 		else
 		{
-			throw new \RuntimeException('certificateKeys must be string or array.');
+			throw LEClientException::InvalidArgumentException('certificateKeys must be string or array.');
 		}
 
 		if (is_string($accountKeys))
@@ -136,30 +140,29 @@ class LEClient
 		}
 		elseif (is_array($accountKeys))
 		{
-			if (!isset($accountKeys['private_key'])) throw new \RuntimeException('accountKeys[private_key] file path must be set.');
-			if (!isset($accountKeys['public_key'])) throw new \RuntimeException('accountKeys[public_key] file path must be set.');
+			if (!isset($accountKeys['private_key'])) throw LEClientException::InvalidArgumentException('accountKeys[private_key] file path must be set.');
+			if (!isset($accountKeys['public_key'])) throw LEClientException::InvalidArgumentException('accountKeys[public_key] file path must be set.');
 
 			foreach ($accountKeys as $param => $file) {
 				$parentDir = dirname($file);
-				if (!is_dir($parentDir)) throw new \RuntimeException($parentDir.' directory not found.');
+				if (!is_dir($parentDir)) throw LEClientException::InvalidDirectoryException($parentDir);
 			}
 
 			$this->accountKeys = $accountKeys;
 		}
 		else
 		{
-			throw new \RuntimeException('accountKeys must be string or array');
+			throw LEClientException::InvalidArgumentException('accountKeys must be string or array.');
 		}
 
-
-		$this->connector = new LEConnector($this->log, $this->baseURL, $this->accountKeys);
+		$this->connector = new LEConnector($this->log, $this->baseURL, $this->accountKeys, $this->sourceIp);
 		$this->account = new LEAccount($this->connector, $this->log, $email, $this->accountKeys);
 		
 		if($this->log instanceof \Psr\Log\LoggerInterface) 
 		{
 			$this->log->info('LEClient finished constructing');
 		}
-		elseif($this->log >= LECLient::LOG_STATUS) LEFunctions::log('LEClient finished constructing', 'function LEClient __construct');
+		elseif($this->log >= LEClient::LOG_STATUS) LEFunctions::log('LEClient finished constructing', 'function LEClient __construct');
 	}
 
 

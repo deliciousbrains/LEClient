@@ -2,6 +2,8 @@
 
 namespace LEClient;
 
+use LEClient\Exceptions\LEConnectorException;
+
 /**
  * LetsEncrypt Connector class, containing the functions necessary to sign with JSON Web Key and Key ID, and perform GET, POST and HEAD requests.
  *
@@ -52,6 +54,8 @@ class LEConnector
 	public $accountDeactivated = false;
 
 	private $log;
+	
+	private $sourceIp = false;
 
     /**
      * Initiates the LetsEncrypt Connector class.
@@ -59,14 +63,16 @@ class LEConnector
      * @param int 		$log			The level of logging. Defaults to no logging. LOG_OFF, LOG_STATUS, LOG_DEBUG accepted.
      * @param string	$baseURL 		The LetsEncrypt server URL to make requests to.
      * @param array		$accountKeys 	Array containing location of account keys files.
+     * @param string    $sourceIp       Optional source IP address.
      */
-	public function __construct($log, $baseURL, $accountKeys)
+	public function __construct($log, $baseURL, $accountKeys, $sourceIp = false)
 	{
 		$this->baseURL = $baseURL;
 		$this->accountKeys = $accountKeys;
 		$this->log = $log;
 		$this->getLEDirectory();
 		$this->getNewNonce();
+		$this->sourceIp = $sourceIp;
 	}
 
     /**
@@ -87,7 +93,7 @@ class LEConnector
      */
 	private function getNewNonce()
 	{
-		if(strpos($this->head($this->newNonce)['header'], "200 OK") == false) throw new \RuntimeException('No new nonce.');
+		if($this->head($this->newNonce)['status'] !== 200) throw LEConnectorException::NoNewNonceException();
 	}
 
     /**
@@ -97,11 +103,11 @@ class LEConnector
      * @param string 	$URL 	The URL or partial URL to make the request to. If it is partial, the baseURL will be prepended.
      * @param object 	$data  	The body to attach to a POST request. Expected as a JSON encoded string.
      *
-     * @return array 	Returns an array with the keys 'request', 'header' and 'body'.
+     * @return array 	Returns an array with the keys 'request', 'header', 'status' and 'body'.
      */
 	private function request($method, $URL, $data = null)
 	{
-		if($this->accountDeactivated) throw new \RuntimeException('The account was deactivated. No further requests can be made.');
+		if($this->accountDeactivated) throw LEConnectorException::AccountDeactivatedException();
 
 		$headers = array('Accept: application/json', 'Content-Type: application/jose+json');
 		$requestURL = preg_match('~^http~', $URL) ? $URL : $this->baseURL . $URL;
@@ -110,7 +116,10 @@ class LEConnector
         curl_setopt($handle, CURLOPT_HTTPHEADER, $headers);
         curl_setopt($handle, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($handle, CURLOPT_HEADER, true);
-
+        if($this->sourceIp !== false) {
+            curl_setopt($handle, CURLOPT_INTERFACE, $this->sourceIp);
+        }
+        
         switch ($method) {
             case 'GET':
                 break;
@@ -123,33 +132,33 @@ class LEConnector
 				curl_setopt($handle, CURLOPT_NOBODY, true);
 				break;
 			default:
-				throw new \RuntimeException('HTTP request ' . $method . ' not supported.');
+				throw LEConnectorException::MethodNotSupportedException($method);
 				break;
         }
         $response = curl_exec($handle);
 
         if(curl_errno($handle)) {
-            throw new \RuntimeException('Curl: ' . curl_error($handle));
+            throw LEConnectorException::CurlErrorException(curl_error($handle));
         }
 
-        $header_size = curl_getinfo($handle, CURLINFO_HEADER_SIZE);
+        $headerSize = curl_getinfo($handle, CURLINFO_HEADER_SIZE);
+        $statusCode = curl_getinfo($handle, CURLINFO_HTTP_CODE);
 
-        $header = substr($response, 0, $header_size);
-        $body = substr($response, $header_size);
+        $header = substr($response, 0, $headerSize);
+        $body = substr($response, $headerSize);
 		$jsonbody = json_decode($body, true);
-		$jsonresponse = array('request' => $method . ' ' . $requestURL, 'header' => $header, 'body' => $jsonbody === null ? $body : $jsonbody);
+		$jsonresponse = array(
+           		'request' => $method . ' ' . $requestURL,
+            		'header' => $header,
+            		'status' => $statusCode,
+            		'body' => $jsonbody === null ? $body : $jsonbody,
+        	);
 		if($this->log instanceof \Psr\Log\LoggerInterface) 
 		{
 			$this->log->debug($method . ' response received', $jsonresponse);
 		}
-		elseif($this->log >= LECLient::LOG_DEBUG) LEFunctions::log($jsonresponse);
-
-		if(	(($method == 'POST' OR $method == 'GET') AND strpos($header, "200 OK") === false AND strpos($header, "201 Created") === false) OR
-			($method == 'HEAD' AND strpos($header, "200 OK") === false))
-		{
-			throw new \RuntimeException('Invalid response, header: ' . $header);
-		}
-
+		elseif($this->log >= LEClient::LOG_DEBUG) LEFunctions::log($jsonresponse);
+		
 		if(preg_match('~Replay\-Nonce: (\S+)~i', $header, $matches))
 		{
 			$this->nonce = trim($matches[1]);
@@ -157,6 +166,12 @@ class LEConnector
 		else
 		{
 			if($method == 'POST') $this->getNewNonce(); // Not expecting a new nonce with GET and HEAD requests.
+		}
+
+		if((($method == 'POST' OR $method == 'GET') AND $statusCode !== 200 AND $statusCode !== 201) OR
+			($method == 'HEAD' AND $statusCode !== 200))
+		{
+			throw LEConnectorException::InvalidResponseException($jsonresponse);
 		}
 
         return $jsonresponse;
@@ -167,7 +182,7 @@ class LEConnector
      *
      * @param string	$url 	The URL or partial URL to make the request to. If it is partial, the baseURL will be prepended.
      *
-     * @return array 	Returns an array with the keys 'request', 'header' and 'body'.
+     * @return array 	Returns an array with the keys 'request', 'header', 'status' and 'body'.
      */
 	public function get($url)
 	{
@@ -180,7 +195,7 @@ class LEConnector
      * @param string 	$url	The URL or partial URL to make the request to. If it is partial, the baseURL will be prepended.
 	 * @param object 	$data	The body to attach to a POST request. Expected as a json string.
      *
-     * @return array 	Returns an array with the keys 'request', 'header' and 'body'.
+     * @return array 	Returns an array with the keys 'request', 'header', 'status' and 'body'.
      */
 	public function post($url, $data = null)
 	{
@@ -192,7 +207,7 @@ class LEConnector
      *
      * @param string 	$url	The URL or partial URL to make the request to. If it is partial, the baseURL will be prepended.
      *
-     * @return array	Returns an array with the keys 'request', 'header' and 'body'.
+     * @return array	Returns an array with the keys 'request', 'header', 'status' and 'body'.
      */
 	public function head($url)
 	{
